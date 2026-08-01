@@ -12,3 +12,12 @@ venv/
 node_modules/
 dist/
 build/
+
+# Emails reales con datos personales (nombre, email, IPs SMTP)
+*.eml
+
+# Logs de Airflow / start_airflow
+logs/
+
+# .env generado en api/
+api/.env

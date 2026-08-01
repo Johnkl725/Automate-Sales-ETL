@@ -38,7 +38,7 @@ from airflow.utils.email import send_email
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 LIMA_TZ = pendulum.timezone("America/Lima")
-NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "castilloreupoluis@gmail.com")
+NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "user@example.com")
 
 default_args = {
     "owner": "gastos-etl",
