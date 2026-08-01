@@ -43,13 +43,43 @@ export interface MovimientosFiltros {
   pageSize: number;
 }
 
+/** Filtros globales de cabecera: rango de fechas + tipo. Se aplican por
+ * igual a los KPIs, la tendencia mensual y el top de comercios, para que
+ * las tres vistas siempre cuenten la misma historia. */
+export interface GlobalFiltros {
+  desde?: string;
+  hasta?: string;
+  tipo?: string;
+}
+
 const TIPOS_VALIDOS = new Set(['consumo_tarjeta', 'pago_servicio']);
+
+function buildWhere(filtros: GlobalFiltros, extra: string[] = []): { clause: string; params: unknown[] } {
+  const where: string[] = [...extra];
+  const params: unknown[] = [];
+
+  if (filtros.tipo && TIPOS_VALIDOS.has(filtros.tipo)) {
+    where.push('tipo = ?');
+    params.push(filtros.tipo);
+  }
+  if (filtros.desde) {
+    where.push('fecha_consumo >= ?');
+    params.push(filtros.desde);
+  }
+  if (filtros.hasta) {
+    where.push('fecha_consumo <= ?');
+    params.push(filtros.hasta);
+  }
+  return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
 
 @Injectable()
 export class GastosService {
   constructor(private readonly db: DuckdbService) {}
 
-  async getResumenGeneral(): Promise<ResumenGeneral> {
+  async getResumenGeneral(filtros: GlobalFiltros = {}): Promise<ResumenGeneral> {
+    const { clause, params } = buildWhere(filtros);
+
     const [totales] = await this.db.all<{
       total: number | null;
       movimientos: bigint;
@@ -58,14 +88,20 @@ export class GastosService {
     }>(
       `SELECT SUM(monto) AS total, COUNT(*) AS movimientos,
               MIN(fecha_consumo)::VARCHAR AS desde, MAX(fecha_consumo)::VARCHAR AS hasta
-       FROM gastos`,
+       FROM gastos ${clause}`,
+      params,
     );
 
+    // El comparativo "este mes vs anterior" es una metrica de calendario
+    // real (independiente del rango elegido en el filtro), pero respeta el
+    // filtro de tipo para que sea coherente con lo que se ve en pantalla.
+    const { clause: tipoClause, params: tipoParams } = buildWhere({ tipo: filtros.tipo });
     const [porMes] = await this.db.all<{ total_actual: number | null; total_anterior: number | null }>(
       `SELECT
          SUM(monto) FILTER (WHERE strftime(fecha_consumo, '%Y-%m') = strftime(current_date, '%Y-%m')) AS total_actual,
          SUM(monto) FILTER (WHERE strftime(fecha_consumo, '%Y-%m') = strftime(current_date - INTERVAL 1 MONTH, '%Y-%m')) AS total_anterior
-       FROM gastos`,
+       FROM gastos ${tipoClause}`,
+      tipoParams,
     );
 
     const total = totales.total ?? 0;
@@ -85,7 +121,13 @@ export class GastosService {
     };
   }
 
-  async getResumenMensual(meses = 12): Promise<ResumenMensualItem[]> {
+  async getResumenMensual(meses = 12, filtros: GlobalFiltros = {}): Promise<ResumenMensualItem[]> {
+    // Si viene un rango explicito (desde/hasta) desde el filtro de cabecera,
+    // manda sobre la ventana relativa de "ultimos N meses".
+    const extra = filtros.desde || filtros.hasta ? [] : ['fecha_consumo >= current_date - INTERVAL (?) MONTH'];
+    const { clause, params } = buildWhere(filtros, extra);
+    const fullParams = extra.length ? [meses, ...params] : params;
+
     const rows = await this.db.all<{
       mes: string;
       tipo: string;
@@ -94,16 +136,29 @@ export class GastosService {
     }>(
       `SELECT strftime(fecha_consumo, '%Y-%m') AS mes, tipo,
               SUM(monto) AS total, COUNT(*) AS movimientos
-       FROM gastos
-       WHERE fecha_consumo >= current_date - INTERVAL (?) MONTH
+       FROM gastos ${clause}
        GROUP BY mes, tipo
        ORDER BY mes ASC`,
-      [meses],
+      fullParams,
     );
     return rows.map((r) => ({ ...r, movimientos: Number(r.movimientos) }));
   }
 
-  async getTopComercios(limit = 10): Promise<ComercioItem[]> {
+  /** Años con datos disponibles, para poblar el selector de año/mes de la
+   * cabecera. Consulta directa (DISTINCT sobre fecha_consumo) -- no hace
+   * falta una tabla de dimension de tiempo para una sola tabla de hechos
+   * de este tamaño; DuckDB calcula el año al vuelo sin costo. */
+  async getPeriodosDisponibles(): Promise<{ anios: number[] }> {
+    const rows = await this.db.all<{ anio: number }>(
+      `SELECT DISTINCT EXTRACT(YEAR FROM fecha_consumo)::INT AS anio
+       FROM gastos
+       ORDER BY anio DESC`,
+    );
+    return { anios: rows.map((r) => r.anio) };
+  }
+
+  async getTopComercios(limit = 10, filtros: GlobalFiltros = {}): Promise<ComercioItem[]> {
+    const { clause, params } = buildWhere(filtros, ['comercio IS NOT NULL']);
     const rows = await this.db.all<{
       comercio: string;
       tipo: string;
@@ -111,12 +166,11 @@ export class GastosService {
       movimientos: bigint;
     }>(
       `SELECT comercio, tipo, SUM(monto) AS total, COUNT(*) AS movimientos
-       FROM gastos
-       WHERE comercio IS NOT NULL
+       FROM gastos ${clause}
        GROUP BY comercio, tipo
        ORDER BY total DESC
        LIMIT ?`,
-      [limit],
+      [...params, limit],
     );
     return rows.map((r) => ({ ...r, movimientos: Number(r.movimientos) }));
   }

@@ -11,18 +11,37 @@ export class GastosController {
   constructor(private readonly gastosService: GastosService) {}
 
   @Get('resumen-general')
-  resumenGeneral() {
-    return this.gastosService.getResumenGeneral();
+  resumenGeneral(
+    @Query('desde') desde?: string,
+    @Query('hasta') hasta?: string,
+    @Query('tipo') tipo?: string,
+  ) {
+    return this.gastosService.getResumenGeneral({ desde, hasta, tipo });
   }
 
   @Get('resumen-mensual')
-  resumenMensual(@Query('meses') meses?: string) {
-    return this.gastosService.getResumenMensual(toIntOr(meses, 12));
+  resumenMensual(
+    @Query('meses') meses?: string,
+    @Query('desde') desde?: string,
+    @Query('hasta') hasta?: string,
+    @Query('tipo') tipo?: string,
+  ) {
+    return this.gastosService.getResumenMensual(toIntOr(meses, 12), { desde, hasta, tipo });
+  }
+
+  @Get('periodos')
+  periodos() {
+    return this.gastosService.getPeriodosDisponibles();
   }
 
   @Get('top-comercios')
-  topComercios(@Query('limit') limit?: string) {
-    return this.gastosService.getTopComercios(toIntOr(limit, 10));
+  topComercios(
+    @Query('limit') limit?: string,
+    @Query('desde') desde?: string,
+    @Query('hasta') hasta?: string,
+    @Query('tipo') tipo?: string,
+  ) {
+    return this.gastosService.getTopComercios(toIntOr(limit, 10), { desde, hasta, tipo });
   }
 
   @Get('movimientos')

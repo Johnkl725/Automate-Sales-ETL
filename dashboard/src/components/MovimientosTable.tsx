@@ -12,19 +12,28 @@ function fechaLabel(fecha: string): string {
   });
 }
 
-export function MovimientosTable() {
+interface Props {
+  /** Filtro de tipo controlado desde la cabecera del dashboard, para que la
+   * tabla siempre este en sincronia con los KPIs y los graficos. */
+  tipoGlobal: string;
+}
+
+export function MovimientosTable({ tipoGlobal }: Props) {
   const [items, setItems] = useState<MovimientoItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [tipo, setTipo] = useState("");
   const [comercio, setComercio] = useState("");
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setPage(1);
+  }, [tipoGlobal]);
 
   useEffect(() => {
     setLoading(true);
     const handle = setTimeout(() => {
       api
-        .movimientos({ page, pageSize: PAGE_SIZE, tipo: tipo || undefined, comercio: comercio || undefined })
+        .movimientos({ page, pageSize: PAGE_SIZE, tipo: tipoGlobal || undefined, comercio: comercio || undefined })
         .then((res) => {
           setItems(res.items);
           setTotal(res.total);
@@ -32,7 +41,7 @@ export function MovimientosTable() {
         .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(handle);
-  }, [page, tipo, comercio]);
+  }, [page, tipoGlobal, comercio]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -60,23 +69,6 @@ export function MovimientosTable() {
               color: "var(--text-primary)",
             }}
           />
-          <select
-            value={tipo}
-            onChange={(e) => {
-              setPage(1);
-              setTipo(e.target.value);
-            }}
-            className="rounded-md px-3 py-1.5 text-sm outline-none"
-            style={{
-              background: "var(--page)",
-              border: "1px solid var(--border)",
-              color: "var(--text-primary)",
-            }}
-          >
-            <option value="">Todos los tipos</option>
-            <option value="consumo_tarjeta">{TIPO_LABEL.consumo_tarjeta}</option>
-            <option value="pago_servicio">{TIPO_LABEL.pago_servicio}</option>
-          </select>
         </div>
       </div>
 

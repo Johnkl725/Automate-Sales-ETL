@@ -34,10 +34,32 @@ try {
     Write-Log "=== start_airflow.ps1 iniciado ==="
 
     # 1. Asegurar que la VM de Podman este arriba (requerido en Windows/Mac).
-    $machineStatus = (podman machine list --format "{{.Name}}\t{{.Running}}" 2>&1)
-    if ($machineStatus -notmatch "true") {
-        Write-Log "Podman machine no esta corriendo, iniciando..."
-        podman machine start 2>&1 | ForEach-Object { Write-Log "  $_" }
+    #
+    # OJO: `podman machine list` en PowerShell devuelve un ARRAY de lineas
+    # (una por fila), no un string. `$array -notmatch "x"` sobre un array
+    # NO es un booleano: filtra el array y devuelve las lineas que NO
+    # matchean -- la fila de encabezado ("NAME ... RUNNING") nunca contiene
+    # "true", asi que ese array de "no matches" nunca queda vacio y el
+    # `if` de abajo se evalua SIEMPRE como true (array no vacio = truthy),
+    # sin importar el estado real de la VM. Por eso hay que usar
+    # `-contains` sobre una columna aislada, que si compara valores exactos
+    # y devuelve un booleano real.
+    #
+    # Ademas, `podman machine start` sin argumento apunta al nombre por
+    # defecto "podman-machine-default" -- si la VM tiene otro nombre (como
+    # "podmanmachine" en esta maquina), falla con "VM does not exist" en
+    # vez de arrancar la que existe. Por eso se resuelve el nombre real de
+    # la primera maquina configurada y se pasa explicito.
+    $runningFlags = @(podman machine list --format "{{.Running}}" 2>&1)
+    $isRunning = $runningFlags -contains "true"
+
+    if (-not $isRunning) {
+        $machineName = (podman machine list --format "{{.Name}}" 2>&1 | Select-Object -First 1)
+        if (-not $machineName) {
+            throw "No hay ninguna maquina de Podman configurada (podman machine list vacio). Correr 'podman machine init' primero."
+        }
+        Write-Log "Podman machine '$machineName' no esta corriendo, iniciando..."
+        podman machine start $machineName 2>&1 | ForEach-Object { Write-Log "  $_" }
     } else {
         Write-Log "Podman machine ya esta corriendo."
     }

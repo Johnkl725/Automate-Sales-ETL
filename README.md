@@ -386,6 +386,28 @@ Get-ScheduledTask -TaskName "gastos-etl-airflow-autostart" | Get-ScheduledTaskIn
 
 El script `start_airflow.ps1` es **idempotente**: crea, arranca o no hace nada según el estado del contenedor. Logs en `logs/start_airflow.log`.
 
+**Bug real encontrado y corregido (2026-08-01):** la primera versión de
+`start_airflow.ps1` nunca levantaba el contenedor al iniciar sesión, por
+dos fallas encadenadas:
+1. `podman machine list` devuelve un **array** de líneas en PowerShell, y
+   `$array -notmatch "true"` sobre un array no es un booleano — filtra el
+   array y devuelve las líneas que NO matchean. La fila de encabezado
+   nunca contiene "true", así que ese resultado nunca quedaba vacío y el
+   `if` se evaluaba siempre como "la VM no está corriendo", sin importar
+   el estado real (se arregló con `-contains` sobre una columna aislada).
+2. Al creer que la VM no estaba corriendo, intentaba
+   `podman machine start` **sin nombre**, que apunta al nombre por defecto
+   `podman-machine-default` — pero la VM real se llama `podmanmachine` —
+   y fallaba con `VM does not exist`, abortando el script antes de tocar
+   el contenedor.
+
+Se detectó porque el usuario prendió la PC a las 8:05am, se logueó, y el
+contenedor seguía parado minutos después. `logs/start_airflow.log` mostró
+el error exacto. Ya corregido: el script ahora resuelve el nombre real de
+la máquina con `podman machine list --format "{{.Name}}"` y usa
+`-contains` para el chequeo de estado, en vez de matchear un array entero
+contra un string.
+
 ---
 
 ## 🧪 Testing

@@ -56,6 +56,39 @@ def test_start_script_exists_and_targets_same_container_and_image():
     assert "ya esta corriendo" in content
 
 
+def test_start_script_does_not_match_array_against_string_for_machine_status():
+    """Guarda de regresion del bug real del 2026-08-01: `$array -notmatch
+    "true"` sobre la salida multilinea de `podman machine list` no es un
+    booleano (filtra el array), asi que el chequeo de "esta corriendo la
+    VM?" daba siempre falso positivo de "no esta corriendo" -- la tarea de
+    autoarranque se disparaba a las 8am pero nunca levantaba el
+    contenedor. El fix usa `-contains` sobre una columna aislada de
+    valores exactos ("true"/"false"), que si es un booleano real.
+    """
+    # Solo se chequean lineas de codigo ejecutable (no comentarios), porque
+    # el comentario que explica el bug menciona "-notmatch" a proposito.
+    code_lines = [
+        line for line in START_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+
+    assert "-notmatch" not in code
+    assert "-contains" in code
+
+
+def test_start_script_starts_machine_by_resolved_name_not_default():
+    """Guarda de regresion: `podman machine start` sin argumento apunta al
+    nombre fijo "podman-machine-default", que no existe si la VM tiene
+    otro nombre (ej. "podmanmachine") -- el script debe resolver el nombre
+    real antes de arrancarla.
+    """
+    content = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'podman machine list --format "{{.Name}}"' in content
+    assert "podman machine start $machineName" in content
+
+
 def test_start_script_is_idempotent_no_hardcoded_absolute_user_path():
     content = START_SCRIPT.read_text(encoding="utf-8")
 
