@@ -1,0 +1,6 @@
+FROM apache/airflow:2.9.3-python3.11
+
+# requirements.txt trae apache-airflow comentado (ya esta en la base image)
+# y pytest (innecesario en runtime, pero inofensivo instalarlo).
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt

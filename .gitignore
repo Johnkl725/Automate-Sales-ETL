@@ -1,0 +1,14 @@
+.env
+data/*.duckdb
+data/checkpoint.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# api/ (NestJS) y dashboard/ (React+Vite)
+node_modules/
+dist/
+build/

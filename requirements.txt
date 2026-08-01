@@ -1,0 +1,14 @@
+duckdb>=1.0.0
+pydantic>=2.7
+pydantic-settings>=2.3
+python-dotenv>=1.0
+beautifulsoup4>=4.12
+tenacity>=8.3
+python-dateutil>=2.9
+
+# Solo si se orquesta con Airflow (opcional, no requerido para scripts/run_local.py)
+# apache-airflow>=2.9
+
+# Testing
+pytest>=8.2
+pyyaml>=6.0

@@ -1,0 +1,43 @@
+version: "3.8"
+
+# Airflow standalone (webserver + scheduler + triggerer en un solo proceso,
+# SQLite + SequentialExecutor) — suficiente para un DAG diario personal.
+# No requiere Postgres/Redis. Pensado para correr con Podman:
+#
+#   podman machine start                 # solo Windows/Mac
+#   podman-compose -f docker-compose.airflow.yaml up --build
+#   # o, con el plugin compose de podman:
+#   podman compose -f docker-compose.airflow.yaml up --build
+#
+# Al arrancar por primera vez, Airflow imprime en el log el usuario/clave
+# admin generados (buscar "Login with username" en la salida). La UI queda
+# en http://localhost:8080
+
+services:
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: gastos_etl_airflow
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      PYTHONPATH: /opt/airflow/src
+      # Rutas dentro del contenedor (sobreescriben lo que traiga .env local)
+      DUCKDB_PATH: /opt/airflow/data/gastos.duckdb
+      CHECKPOINT_PATH: /opt/airflow/data/checkpoint.json
+      TZ: America/Lima
+    volumes:
+      - ./dags:/opt/airflow/dags:Z
+      - ./src:/opt/airflow/src:Z
+      - ./data:/opt/airflow/data:Z
+      - airflow_home:/opt/airflow
+    ports:
+      - "8080:8080"
+    command: standalone
+    restart: unless-stopped
+
+volumes:
+  airflow_home:
