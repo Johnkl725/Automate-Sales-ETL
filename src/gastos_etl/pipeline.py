@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from gastos_etl.categorizers.base import GastoCategorizer
 from gastos_etl.exceptions import NoParserAvailableError, ParsingError
 from gastos_etl.parsers.base import EmailParser
 from gastos_etl.repositories.base import GastoRepository
@@ -18,12 +19,19 @@ class RunResult:
 
 
 class GastoETLPipeline:
-    """Orquestador. No conoce IMAP ni DuckDB, solo las interfaces (DIP)."""
+    """Orquestador. No conoce IMAP ni DB, solo las interfaces (DIP)."""
 
-    def __init__(self, source: EmailSource, parsers: list[EmailParser], repo: GastoRepository):
+    def __init__(
+        self,
+        source: EmailSource,
+        parsers: list[EmailParser],
+        repo: GastoRepository,
+        categorizer: GastoCategorizer | None = None,
+    ):
         self._source = source
         self._parsers = parsers
         self._repo = repo
+        self._categorizer = categorizer
 
     def _find_parser(self, raw) -> EmailParser:
         for parser in self._parsers:
@@ -47,6 +55,9 @@ class GastoETLPipeline:
                 logger.error("No se pudo procesar %s: %s", raw.message_id, exc)
                 result.fallidos += 1
                 continue
+
+            if self._categorizer:
+                gasto.categoria = self._categorizer.categorize(gasto.comercio)
 
             self._repo.save(gasto)
             self._source.mark_processed(raw.message_id)

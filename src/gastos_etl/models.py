@@ -26,7 +26,8 @@ class GastoBCP(BaseModel):
     message_id: str
     monto: Decimal = Field(gt=0)
     moneda: str = "PEN"
-    tipo: str = "consumo_tarjeta"  # o "pago_servicio"
+    tipo: str = "consumo_tarjeta"  # o "pago_servicio", "yape"
+    categoria: str = "Otros"
     comercio: str | None = None
     fecha_consumo: datetime
     procesado_en: datetime = Field(default_factory=datetime.utcnow)

@@ -18,10 +18,12 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = PROJECT_ROOT / "docker-compose.airflow.yaml"
 START_SCRIPT = PROJECT_ROOT / "scripts" / "start_airflow.ps1"
+PODMAN_HELPERS_FILE = PROJECT_ROOT / "scripts" / "PodmanHelpers.ps1"
 REGISTER_TASK_SCRIPT = PROJECT_ROOT / "scripts" / "register_autostart_task.ps1"
 DAG_FILE = PROJECT_ROOT / "dags" / "gastos_bcp_dag.py"
 
 CONTAINER_NAME = "gastos_etl_airflow"
+MSSQL_CONTAINER_NAME = "gastos_etl_mssql"
 IMAGE_TAG = "localhost/gastos-etl-airflow:local"
 
 
@@ -45,18 +47,51 @@ def test_docker_compose_mounts_dags_src_and_data():
     assert "/opt/airflow/data" in mounted
 
 
-def test_start_script_exists_and_targets_same_container_and_image():
+def test_start_script_dot_sources_podman_helpers():
+    content = START_SCRIPT.read_text(encoding="utf-8")
+    assert 'PodmanHelpers.ps1' in content
+    assert PODMAN_HELPERS_FILE.exists()
+
+
+def test_start_script_manages_both_containers_by_name_and_image():
     content = START_SCRIPT.read_text(encoding="utf-8")
 
-    assert f'$ContainerName = "{CONTAINER_NAME}"' in content
+    assert f'$AirflowContainerName = "{CONTAINER_NAME}"' in content
+    assert f'$MssqlContainerName = "{MSSQL_CONTAINER_NAME}"' in content
     assert f'$ImageTag = "{IMAGE_TAG}"' in content
-    # Debe cubrir los 3 estados posibles del contenedor: no existe, parado, corriendo.
-    assert "podman run -d" in content
-    assert "podman start" in content
+    # Debe cubrir los 3 estados posibles de cada contenedor: no existe, parado, corriendo.
+    assert '"run", "-d"' in content
+    assert '@("start", $AirflowContainerName)' in content
+    assert '@("start", $MssqlContainerName)' in content
     assert "ya esta corriendo" in content
 
 
-def test_start_script_does_not_match_array_against_string_for_machine_status():
+def test_start_script_publishes_mssql_on_nonstandard_host_port():
+    """Guarda de regresion del bug real del 2026-08-21: publicar SQL
+    Server en el puerto estandar 1433 del host choco con una instancia
+    nativa de SQL Server ya instalada en Windows en ese mismo puerto --
+    las conexiones desde el host caian en el SQL Server equivocado
+    (login rechazado con credenciales que parecian correctas). El
+    contenedor se publica en 14330 en el host; container-a-container
+    (Airflow -> SQL Server) sigue usando el puerto interno real 1433, sin
+    pasar por ese mapeo.
+    """
+    content = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert '"-p", "14330:1433"' in content
+    assert '"-e", "MSSQL_PORT=1433"' in content
+
+
+def test_start_script_joins_shared_network_for_airflow_to_reach_mssql():
+    content = START_SCRIPT.read_text(encoding="utf-8")
+
+    assert '$NetworkName = "gastos-etl-net"' in content
+    assert "Ensure-PodmanNetwork" in content
+    assert '"--network", $NetworkName' in content
+    assert "MSSQL_HOST=$MssqlContainerName" in content
+
+
+def test_podman_helpers_does_not_match_array_against_string_for_machine_status():
     """Guarda de regresion del bug real del 2026-08-01: `$array -notmatch
     "true"` sobre la salida multilinea de `podman machine list` no es un
     booleano (filtra el array), asi que el chequeo de "esta corriendo la
@@ -68,7 +103,7 @@ def test_start_script_does_not_match_array_against_string_for_machine_status():
     # Solo se chequean lineas de codigo ejecutable (no comentarios), porque
     # el comentario que explica el bug menciona "-notmatch" a proposito.
     code_lines = [
-        line for line in START_SCRIPT.read_text(encoding="utf-8").splitlines()
+        line for line in PODMAN_HELPERS_FILE.read_text(encoding="utf-8").splitlines()
         if not line.strip().startswith("#")
     ]
     code = "\n".join(code_lines)
@@ -77,16 +112,34 @@ def test_start_script_does_not_match_array_against_string_for_machine_status():
     assert "-contains" in code
 
 
-def test_start_script_starts_machine_by_resolved_name_not_default():
+def test_podman_helpers_starts_machine_by_resolved_name_not_default():
     """Guarda de regresion: `podman machine start` sin argumento apunta al
     nombre fijo "podman-machine-default", que no existe si la VM tiene
     otro nombre (ej. "podmanmachine") -- el script debe resolver el nombre
     real antes de arrancarla.
     """
-    content = START_SCRIPT.read_text(encoding="utf-8")
+    content = PODMAN_HELPERS_FILE.read_text(encoding="utf-8")
 
     assert 'podman machine list --format "{{.Name}}"' in content
-    assert "podman machine start $machineName" in content
+    assert '@("machine", "start", $machineName)' in content
+
+
+def test_podman_helpers_does_not_let_stderr_warnings_abort_podman_calls():
+    """Guarda de regresion del bug real del 2026-08-02: con
+    $ErrorActionPreference = "Stop" a nivel global, cualquier linea que
+    podman escriba a stderr -- incluida una advertencia cosmetica de WSL
+    ("your NxN screen size is bogus, expect trouble") sin relacion con
+    ningun fallo real -- se convertia en un NativeCommandError que
+    abortaba el script antes de levantar el contenedor. El fix: las
+    llamadas a podman corren con $ErrorActionPreference = "Continue" y el
+    exito/fallo se decide por $LASTEXITCODE, no por la mera presencia de
+    texto en stderr.
+    """
+    content = PODMAN_HELPERS_FILE.read_text(encoding="utf-8")
+
+    assert "function Invoke-Podman" in content
+    assert '$ErrorActionPreference = "Continue"' in content
+    assert "$LASTEXITCODE" in content
 
 
 def test_start_script_is_idempotent_no_hardcoded_absolute_user_path():

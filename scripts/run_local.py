@@ -8,6 +8,11 @@ ultimo run exitoso, para no reprocesar todo el historial cada vez.
 Usa --force para ignorar el checkpoint y re-escanear --since-days dias
 (util despues de agregar un parser nuevo, para que tambien capture el
 historial de ese tipo de correo).
+
+Escribe en SQL Server (ver .env MSSQL_*). Requiere el ODBC Driver 18 for
+SQL Server instalado en Windows (instalador de Microsoft), ademas del
+contenedor gastos_etl_mssql corriendo (scripts/start_airflow.ps1 lo
+levanta junto con Airflow).
 """
 import argparse
 import json
@@ -22,7 +27,7 @@ from gastos_etl.config import get_settings
 from gastos_etl.parsers.bcp_debito_parser import BCPDebitoParser
 from gastos_etl.parsers.bcp_pago_servicio_parser import BCPPagoServicioParser
 from gastos_etl.pipeline import GastoETLPipeline
-from gastos_etl.repositories.duckdb_repository import DuckDBGastoRepository
+from gastos_etl.repositories.sqlserver_repository import SqlServerGastoRepository
 from gastos_etl.sources.imap_source import ImapEmailSource
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -54,7 +59,7 @@ def main() -> None:
     since = _load_checkpoint(checkpoint_path, args.since_days, args.force)
     logger.info("Buscando correos desde %s", since.isoformat())
 
-    Path(settings.duckdb_path).parent.mkdir(parents=True, exist_ok=True)
+    from gastos_etl.sources.imap_source import SearchProfile
 
     source = ImapEmailSource(
         host=settings.imap_host,
@@ -62,15 +67,27 @@ def main() -> None:
         user=settings.imap_user,
         app_password=settings.imap_app_password,
         mailbox=settings.imap_mailbox,
-        sender_filter=settings.bcp_sender,
-        subject_hints=settings.bcp_subject_hints_list,
+        search_profiles=[
+            SearchProfile(
+                sender_filter=settings.bcp_sender,
+                subject_hints=settings.bcp_subject_hints_list,
+            ),
+            SearchProfile(
+                sender_filter="yape@bcp.com.pe",
+                subject_hints=["Yape", "Yapeaste"],
+            )
+        ],
         processed_label=settings.imap_processed_label,
     )
-    repo = DuckDBGastoRepository(settings.duckdb_path)
+    repo = SqlServerGastoRepository(settings)
+    from gastos_etl.parsers.yape_parser import YapeParser
+    from gastos_etl.categorizers.rule_based import RuleBasedCategorizer
+    
     pipeline = GastoETLPipeline(
         source=source,
-        parsers=[BCPDebitoParser(), BCPPagoServicioParser()],
+        parsers=[BCPDebitoParser(), BCPPagoServicioParser(), YapeParser()],
         repo=repo,
+        categorizer=RuleBasedCategorizer(),
     )
 
     run_started_at = datetime.utcnow()

@@ -130,7 +130,7 @@ def gastos_bcp_dag():
         from gastos_etl.parsers.bcp_debito_parser import BCPDebitoParser
         from gastos_etl.parsers.bcp_pago_servicio_parser import BCPPagoServicioParser
         from gastos_etl.pipeline import GastoETLPipeline
-        from gastos_etl.repositories.duckdb_repository import DuckDBGastoRepository
+        from gastos_etl.repositories.sqlserver_repository import SqlServerGastoRepository
         from gastos_etl.sources.imap_source import ImapEmailSource
 
         logger = logging.getLogger("airflow.task")
@@ -142,21 +142,35 @@ def gastos_bcp_dag():
         else:
             since = dt.utcnow() - timedelta(days=1)
 
+        from gastos_etl.sources.imap_source import SearchProfile
+        
         source = ImapEmailSource(
             host=settings.imap_host,
             port=settings.imap_port,
             user=settings.imap_user,
             app_password=settings.imap_app_password,
             mailbox=settings.imap_mailbox,
-            sender_filter=settings.bcp_sender,
-            subject_hints=settings.bcp_subject_hints_list,
+            search_profiles=[
+                SearchProfile(
+                    sender_filter=settings.bcp_sender,
+                    subject_hints=settings.bcp_subject_hints_list,
+                ),
+                SearchProfile(
+                    sender_filter="yape@bcp.com.pe",
+                    subject_hints=["Yape", "Yapeaste"],
+                )
+            ],
             processed_label=settings.imap_processed_label,
         )
-        repo = DuckDBGastoRepository(settings.duckdb_path)
+        repo = SqlServerGastoRepository(settings)
+        from gastos_etl.parsers.yape_parser import YapeParser
+        from gastos_etl.categorizers.rule_based import RuleBasedCategorizer
+        
         pipeline = GastoETLPipeline(
             source=source,
-            parsers=[BCPDebitoParser(), BCPPagoServicioParser()],
+            parsers=[BCPDebitoParser(), BCPPagoServicioParser(), YapeParser()],
             repo=repo,
+            categorizer=RuleBasedCategorizer(),
         )
 
         run_started_at = dt.utcnow()

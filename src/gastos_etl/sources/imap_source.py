@@ -37,6 +37,13 @@ def _build_subject_clause(subject_hints: list[str]) -> str:
     return clause
 
 
+from dataclasses import dataclass
+
+@dataclass
+class SearchProfile:
+    sender_filter: str
+    subject_hints: list[str]
+
 class ImapEmailSource:
     """Implementación de EmailSource sobre IMAP con App Password.
 
@@ -54,8 +61,7 @@ class ImapEmailSource:
         user: str,
         app_password: str,
         mailbox: str,
-        sender_filter: str,
-        subject_hints: list[str],
+        search_profiles: list[SearchProfile],
         processed_label: str,
     ):
         self._host = host
@@ -63,8 +69,7 @@ class ImapEmailSource:
         self._user = user
         self._password = app_password
         self._mailbox = mailbox
-        self._sender_filter = sender_filter
-        self._subject_hints = subject_hints
+        self._search_profiles = search_profiles
         self._processed_label = processed_label
 
     @retry(
@@ -93,25 +98,28 @@ class ImapEmailSource:
             conn.select(f'"{self._mailbox}"')
 
             date_str = since.strftime("%d-%b-%Y")
-            subject_clause = _build_subject_clause(self._subject_hints)
-            criteria = (
-                f'(FROM "{self._sender_filter}" '
-                f"{subject_clause} "
-                f'SINCE "{date_str}" '
-                f'NOT KEYWORD "{self._processed_label}")'
-            )
-            status, data = conn.search(None, criteria)
-            if status != "OK":
-                logger.warning("Busqueda IMAP fallo con status=%s", status)
-                return []
-
             emails: list[RawEmail] = []
-            for num in data[0].split():
-                status, msg_data = conn.fetch(num, "(RFC822)")
-                if status != "OK" or not msg_data or not msg_data[0]:
+            
+            for profile in self._search_profiles:
+                subject_clause = _build_subject_clause(profile.subject_hints)
+                criteria = (
+                    f'(FROM "{profile.sender_filter}" '
+                    f"{subject_clause} "
+                    f'SINCE "{date_str}" '
+                    f'NOT KEYWORD "{self._processed_label}")'
+                )
+                status, data = conn.search(None, criteria)
+                if status != "OK":
+                    logger.warning("Busqueda IMAP fallo para %s con status=%s", profile.sender_filter, status)
                     continue
-                raw_bytes = msg_data[0][1]
-                emails.append(self._to_raw_email(raw_bytes))
+
+                for num in data[0].split():
+                    status, msg_data = conn.fetch(num, "(RFC822)")
+                    if status != "OK" or not msg_data or not msg_data[0]:
+                        continue
+                    raw_bytes = msg_data[0][1]
+                    emails.append(self._to_raw_email(raw_bytes))
+                    
             return emails
         finally:
             conn.logout()

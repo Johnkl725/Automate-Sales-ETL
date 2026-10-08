@@ -1,4 +1,5 @@
 duckdb>=1.0.0
+pyodbc>=5.1
 pydantic>=2.7
 pydantic-settings>=2.3
 python-dotenv>=1.0

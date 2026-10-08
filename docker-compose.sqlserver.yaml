@@ -1,0 +1,41 @@
+version: "3.8"
+
+# SQL Server 2022 Express en Podman -- destino del pipeline desde la
+# migracion del modelo estrella (ver sql/schema_star.sql). Documentacion
+# de referencia: en la practica se levanta con `podman run` directo desde
+# scripts/start_airflow.ps1 (ni podman-compose ni docker-compose estan
+# instalados en el PATH de esta maquina -- confirmado durante el setup de
+# Airflow), pero el comando equivalente esta abajo si algun dia se instala
+# el plugin compose.
+#
+#   podman machine start                 # solo Windows/Mac
+#   podman network create gastos-etl-net # una sola vez
+#   podman compose -f docker-compose.sqlserver.yaml up -d
+#
+# Requiere MSSQL_SA_PASSWORD en .env con una password que cumpla la
+# politica de complejidad de SQL Server (8+ caracteres, mayuscula,
+# minuscula, digito y simbolo) -- el contenedor no arranca si es debil.
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: gastos_etl_mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Express"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      TZ: America/Lima
+    volumes:
+      - mssql_data:/var/opt/mssql
+    ports:
+      - "14330:1433"
+    networks:
+      - gastos-etl-net
+    restart: unless-stopped
+
+networks:
+  gastos-etl-net:
+    external: true
+
+volumes:
+  mssql_data:
