@@ -3,11 +3,11 @@
 # 💳 Gastos ETL
 
 **Pipeline automatizado de Data Engineering que extrae notificaciones bancarias de Gmail,
-transforma y persiste los datos en DuckDB, y los visualiza en un dashboard analítico en tiempo real.**
+las transforma y las persiste en un modelo estrella en SQL Server para análisis en Power BI.**
 
-`Python 3.11+` · `DuckDB` · `Apache Airflow` · `NestJS 11` · `React 19` · `Podman` · `pytest`
+`Python 3.11+` · `SQL Server 2022` · `Apache Airflow` · `Podman` · `Power BI` · `pytest`
 
-*Pipeline end-to-end: desde el correo bancario hasta el gráfico interactivo, sin intervención manual.*
+*Pipeline end-to-end: desde el correo bancario hasta el modelo dimensional listo para BI, sin intervención manual.*
 
 </div>
 
@@ -22,7 +22,8 @@ transforma y persiste los datos en DuckDB, y los visualiza en un dashboard anal�
 - [Patrones de Diseño y Buenas Prácticas](#-patrones-de-diseño-y-buenas-prácticas)
 - [Estructura del Proyecto](#-estructura-del-proyecto)
 - [Quickstart](#-quickstart)
-- [Dashboard Analítico](#-dashboard-analítico)
+- [Modelo Estrella en SQL Server + Power BI](#-modelo-estrella-en-sql-server--power-bi)
+- [Dashboard Analítico (congelado)](#-dashboard-analítico-congelado)
 - [Orquestación con Airflow](#-orquestación-con-airflow)
 - [Testing](#-testing)
 - [Consultas Ad-Hoc](#-consultas-ad-hoc)
@@ -61,14 +62,19 @@ graph LR
     end
 
     subgraph Carga
-        E -->|GastoBCP| G[DuckDBGastoRepository]
+        E -->|GastoBCP| G[SqlServerGastoRepository]
         F -->|GastoBCP| G
-        G -->|INSERT ON CONFLICT DO NOTHING| H[(DuckDB)]
+        G -->|get-or-create dims + INSERT WHERE NOT EXISTS| H[(SQL Server<br/>modelo estrella)]
     end
 
-    subgraph Visualización
-        H -->|Read-Only| I[NestJS API]
-        I -->|REST JSON| J[React Dashboard]
+    subgraph "Análisis (Power BI)"
+        H -->|Import / DirectQuery| M[Power BI Desktop]
+    end
+
+    subgraph "Histórico congelado ❄️"
+        H -.->|migración one-time| N[(DuckDB)]
+        N -.->|Read-Only| I[NestJS API]
+        I -.->|REST JSON| J[React Dashboard]
     end
 
     subgraph Orquestación
@@ -87,10 +93,10 @@ graph LR
 | **Source** | `ImapEmailSource` | Conexión IMAP SSL, búsqueda incremental, checkpoint, etiquetado Gmail |
 | **Parser** | `BCPDebitoParser`, `BCPPagoServicioParser` | Extracción de monto, comercio, fecha desde HTML bancario |
 | **Pipeline** | `GastoETLPipeline` | Orquestación E→T→L con tolerancia a fallos por item |
-| **Repository** | `DuckDBGastoRepository` | Persistencia idempotente con migraciones automáticas |
-| **API** | NestJS `GastosController` + `GastosService` | REST endpoints analíticos (read-only sobre DuckDB) |
-| **Dashboard** | React + Recharts + Tailwind CSS | Visualización interactiva con filtros y paginación |
+| **Repository** | `SqlServerGastoRepository` | Persistencia idempotente en modelo estrella (dims + fact) |
+| **Análisis** | Power BI Desktop | Modelo relacional, jerarquías de tiempo, medidas DAX |
 | **Scheduler** | Airflow DAG + Podman + Windows Task Scheduler | Ejecución diaria automatizada con auto-arranque |
+| *(congelado)* | `DuckDBGastoRepository` + NestJS + React | Dashboard web anterior, histórico hasta la migración |
 
 ---
 
@@ -123,6 +129,112 @@ graph LR
 
 ---
 
+## 🔷 Modelo Estrella en SQL Server + Power BI
+
+Desde la migración, el pipeline escribe **solo en SQL Server** (contenedor
+Podman, imagen `mcr.microsoft.com/mssql/server:2022-latest`), en un modelo
+estrella pensado para conectarse directo desde Power BI:
+
+```
+dim_tiempo (fecha_id PK)        dim_comercio (comercio_id PK)
+  anio, mes, mes_nombre,          nombre_comercio, fecha_alta
+  trimestre, dia_semana,
+  es_fin_semana                 dim_tipo (tipo_id PK)
+                 \                 tipo_codigo, tipo_descripcion
+                  \               /
+                   fact_gastos
+                     message_id (idempotencia)
+                     fecha_id, comercio_id, tipo_id  (FKs)
+                     monto, moneda, fecha_consumo, procesado_en
+```
+
+- `dim_tiempo` se pre-puebla una sola vez (2024–2032, ~3300 filas, CTE
+  recursiva T-SQL) — `fecha_id` es una clave calculada (`yyyyMMdd`), no
+  requiere query por fila.
+- `dim_comercio` se llena por *get-or-create* en cada `save()`; lleva
+  `fecha_alta` como columna de auditoría (cuándo se dio de alta).
+- `dim_tipo` tiene un seed fijo de 2 valores (no cambia).
+
+**¿Por qué no SCD Type 2?** Ninguna de las 3 dimensiones tiene hoy un
+atributo mutable cuyo historial haya que versionar — `dim_tiempo` es
+inmutable por definición, `dim_tipo` es un seed fijo, y en `dim_comercio`
+`nombre_comercio` es a la vez la única columna y la clave natural del
+get-or-create (si el nombre "cambia", nace un comercio nuevo, que es el
+comportamiento correcto). SCD2 se justificaría si `dim_comercio` ganara un
+atributo que sí cambie con el tiempo (ej. categoría, ciudad) y necesitáramos
+que los hechos viejos sigan apuntando al valor vigente al momento de la
+transacción — no es el caso hoy. Por eso solo se agregó `fecha_alta`
+(auditoría simple), sin `vigente_desde`/`vigente_hasta`/`es_actual` ni
+versionado de `comercio_id`.
+- DDL completo y comentado en [`sql/schema_star.sql`](sql/schema_star.sql)
+  (ejecutado en la práctica por `scripts/init_sqlserver_db.py` via
+  `pyodbc`, statement por statement — el archivo `.sql` es la referencia
+  legible, no algo que se corra directo con `sqlcmd`).
+
+### Levantar SQL Server
+
+Ya integrado en `scripts/start_airflow.ps1` (crea la red Podman compartida
+`gastos-etl-net`, levanta `gastos_etl_mssql` y luego `gastos_etl_airflow`
+en esa misma red, para que Airflow resuelva SQL Server por nombre de
+contenedor). Ver [`docker-compose.sqlserver.yaml`](docker-compose.sqlserver.yaml)
+para la config de referencia. Password de `sa` en `.env` → `MSSQL_SA_PASSWORD`
+(debe cumplir la política de complejidad de SQL Server).
+
+```powershell
+# Idempotente: crea o arranca SQL Server + Airflow, en ese orden.
+powershell -ExecutionPolicy Bypass -File scripts\start_airflow.ps1
+
+# Inicializar el schema (idempotente, seguro correrlo de nuevo)
+python scripts/init_sqlserver_db.py
+
+# Migración one-time del histórico DuckDB (52 filas al momento de migrar)
+python scripts/migrate_duckdb_to_sqlserver.py
+```
+
+Requiere un **ODBC Driver de SQL Server** de Microsoft instalado en
+Windows para correr los scripts de arriba localmente (la imagen de
+Airflow ya trae el 18 instalado — ver `Dockerfile.airflow`). Si en tu PC
+solo tienes el 17, ajusta `MSSQL_ODBC_DRIVER` en `.env` — el contenedor
+de Airflow igual usa el 18 (se sobreescribe en `start_airflow.ps1`).
+
+> **Puerto 14330, no 1433**: si tu PC ya tiene una instancia nativa de SQL
+> Server instalada (Express, LocalDB, etc.), va a estar escuchando en el
+> 1433 del host — publicar el contenedor ahí hace que las conexiones
+> caigan en el SQL Server equivocado (login rechazado con credenciales
+> que parecen correctas pero no lo son). Por eso el contenedor se publica
+> en `14330:1433`; container-a-container (Airflow → SQL Server) no pasa
+> por este mapeo, sigue usando el puerto interno real 1433.
+>
+> **Usa `127.0.0.1`, no `localhost`**: el port-forward de Podman en Windows
+> solo publica en IPv4, pero `localhost` puede resolver primero a `::1`
+> (IPv6) y esa conexión es rechazada — según el cliente, eso tumba el
+> intento entero en vez de reintentar por IPv4. `127.0.0.1` explícito
+> evita la ambigüedad, tanto en `.env` (`MSSQL_HOST`) como en Power BI.
+
+### Conectar Power BI Desktop
+
+1. **Obtener datos → SQL Server** → servidor `127.0.0.1,14330` (usa la IP,
+   no `localhost` — ver nota de abajo) → base
+   `GastosBCP` → modo **Import** (volumen personal, no hace falta
+   DirectQuery).
+2. Autenticación **SQL Server** con usuario `sa` y la password de `.env`.
+3. En el modelo, crear las relaciones (todas 1-a-muchos, dimensión → hecho):
+   - `dim_tiempo[fecha_id]` → `fact_gastos[fecha_id]`
+   - `dim_comercio[comercio_id]` → `fact_gastos[comercio_id]`
+   - `dim_tipo[tipo_id]` → `fact_gastos[tipo_id]`
+4. Marcar `dim_tiempo` como **tabla de fechas** ("Mark as Date Table") para
+   que las jerarquías año/trimestre/mes/día funcionen nativas.
+5. Medidas DAX de ejemplo:
+   ```dax
+   Total Gastado = SUM(fact_gastos[monto])
+   Gasto Mes Actual = TOTALMTD([Total Gastado], dim_tiempo[fecha])
+   Variación % MoM =
+       VAR MesAnterior = CALCULATE([Total Gastado], PREVIOUSMONTH(dim_tiempo[fecha]))
+       RETURN DIVIDE([Total Gastado] - MesAnterior, MesAnterior)
+   ```
+
+---
+
 ## 🛠 Tech Stack
 
 ### ETL Pipeline (Python)
@@ -130,11 +242,13 @@ graph LR
 | Tecnología | Uso |
 |:-----------|:----|
 | **Python 3.11+** | Lenguaje principal del pipeline |
-| **DuckDB ≥ 1.0** | Base de datos analítica embebida (sin servidor) |
+| **SQL Server 2022 Express** | Modelo estrella (dims + fact), contenedor Podman |
+| **pyodbc + ODBC Driver 18** | Driver de conexión Python → SQL Server |
 | **Pydantic V2** | Validación de modelos de dominio y configuración tipada |
 | **BeautifulSoup4** | Parsing resiliente de HTML bancario |
 | **Tenacity** | Reintentos con backoff exponencial en conexiones IMAP |
 | **python-dotenv** | Gestión de variables de entorno (`.env`) |
+| *(congelado)* **DuckDB ≥ 1.0** | Base analítica embebida — histórico previo a la migración |
 
 ### Orquestación
 
@@ -197,8 +311,12 @@ gastos-etl/
 │   │   ├── bcp_debito_parser.py #    Parser consumos tarjeta débito/crédito
 │   │   └── bcp_pago_servicio_parser.py  # Parser pagos de servicios
 │   └── repositories/
-│       ├── base.py              #    Protocol: GastoRepository
-│       └── duckdb_repository.py #    DuckDB con migraciones automáticas
+│       ├── base.py                  #    Protocol: GastoRepository
+│       ├── sqlserver_repository.py  #    SQL Server, modelo estrella (activo)
+│       └── duckdb_repository.py     #    DuckDB (congelado, histórico)
+│
+├── sql/
+│   └── schema_star.sql          # 🔷 DDL modelo estrella (referencia legible)
 │
 ├── dags/
 │   └── gastos_bcp_dag.py        # ⏰ Airflow DAG (08:00 AM Lima, alertas SMTP)
@@ -223,27 +341,32 @@ gastos-etl/
 │           └── MovimientosTable.tsx   # Tabla paginada con filtros
 │
 ├── scripts/
-│   ├── init_db.py               # Inicializa schema DuckDB
-│   ├── run_local.py             # Runner local (sin Airflow)
-│   ├── query_gastos.py          # CLI para consultas ad-hoc
-│   ├── start_airflow.ps1        # Arranque idempotente del contenedor
+│   ├── init_db.py                    # (congelado) Inicializa schema DuckDB
+│   ├── init_sqlserver_db.py          # 🔷 Inicializa modelo estrella en SQL Server
+│   ├── migrate_duckdb_to_sqlserver.py # 🔷 Migración one-time del histórico
+│   ├── run_local.py                  # Runner local (sin Airflow)
+│   ├── query_gastos.py               # CLI para consultas ad-hoc (DuckDB congelado)
+│   ├── start_airflow.ps1             # Arranque idempotente: SQL Server + Airflow
+│   ├── PodmanHelpers.ps1             # Helpers Podman compartidos (dot-source)
 │   └── register_autostart_task.ps1   # Registro en Windows Task Scheduler
 │
 ├── tests/
 │   ├── test_parser.py           # Tests parser débito (con .eml real)
 │   ├── test_pago_servicio_parser.py  # Tests parser pago servicio
 │   ├── test_pipeline.py         # Tests pipeline con fakes/mocks
+│   ├── test_sqlserver_repository.py  # Tests repo SQL Server (pyodbc mockeado)
 │   ├── test_deploy_config.py    # Tests de sincronización de config
 │   └── fixtures/                # Emails de prueba (.eml, .html)
 │
 ├── data/
-│   ├── gastos.duckdb            # 🗄️ Base de datos analítica
+│   ├── gastos.duckdb            # 🗄️ (congelado) Histórico previo a la migración
 │   └── checkpoint.json          # Timestamp última corrida exitosa
 │
-├── Dockerfile.airflow           # Imagen Airflow (Python 3.11)
-├── docker-compose.airflow.yaml  # Config de referencia Podman/Docker
-├── requirements.txt             # Dependencias Python
-├── .env.example                 # Template de variables de entorno
+├── Dockerfile.airflow             # Imagen Airflow (Python 3.11 + ODBC Driver 18)
+├── docker-compose.airflow.yaml    # Config de referencia Podman/Docker (Airflow)
+├── docker-compose.sqlserver.yaml  # Config de referencia Podman/Docker (SQL Server)
+├── requirements.txt                # Dependencias Python
+├── .env.example                    # Template de variables de entorno
 └── .gitignore
 ```
 
@@ -254,9 +377,10 @@ gastos-etl/
 ### Prerrequisitos
 
 - **Python 3.11+**
-- **Node.js 18+** (para API y Dashboard)
 - **Gmail con 2FA activo** + [App Password](https://myaccount.google.com/apppasswords)
-- **Podman** (o Docker) — solo para orquestación con Airflow
+- **Podman** (o Docker) — para SQL Server y Airflow
+- **ODBC Driver 18 for SQL Server** (Microsoft) — para correr scripts Python localmente contra SQL Server
+- **Power BI Desktop** — para el análisis (opcional, solo si vas a conectar el modelo estrella)
 
 ### 1. Clonar e instalar
 
@@ -271,29 +395,34 @@ pip install -r requirements.txt
 
 # Configuración
 cp .env.example .env
-# → Edita .env con tu IMAP_USER y IMAP_APP_PASSWORD
+# → Edita .env con tu IMAP_USER, IMAP_APP_PASSWORD y MSSQL_SA_PASSWORD
 ```
 
-### 2. Inicializar la base de datos y ejecutar el pipeline
+### 2. Levantar SQL Server y correr el pipeline
 
-```bash
-python scripts/init_db.py        # Crea schema en DuckDB
-python scripts/run_local.py      # Ejecuta el pipeline ETL completo
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start_airflow.ps1  # SQL Server + Airflow
+python scripts/init_sqlserver_db.py                                 # Schema (idempotente)
+python scripts/run_local.py                                         # Pipeline ETL completo
 ```
 
-El pipeline conecta a Gmail, descarga correos del BCP, los parsea y persiste en `data/gastos.duckdb`. Los emails procesados quedan etiquetados como `Procesado-BCP` en tu Gmail.
+El pipeline conecta a Gmail, descarga correos del BCP, los parsea y persiste en el modelo estrella de SQL Server. Los emails procesados quedan etiquetados como `Procesado-BCP` en tu Gmail.
 
 ### 3. Verificar los datos
 
-```bash
-python scripts/query_gastos.py resumen      # Totales por mes
-python scripts/query_gastos.py comercios    # Top comercios por gasto
-python scripts/query_gastos.py ultimos 20   # Últimos N movimientos
-```
+Con SQL Server Management Studio / Azure Data Studio / Power BI, o con las
+queries T-SQL de la sección [Consultas Ad-Hoc](#-consultas-ad-hoc).
 
 ---
 
-## 📊 Dashboard Analítico
+## 📊 Dashboard Analítico (congelado)
+
+> ❄️ **Congelado desde la migración a SQL Server.** El pipeline ya no
+> escribe en DuckDB, así que este dashboard (NestJS + React, abajo) dejó
+> de recibir datos nuevos y muestra el histórico hasta el momento de la
+> migración. Power BI (sección anterior) es la herramienta de análisis
+> vigente. El código se deja tal cual — sigue siendo un ejemplo funcional
+> de API + frontend sobre DuckDB — pero no forma parte del flujo activo.
 
 El dashboard presenta una interfaz completa de análisis financiero personal:
 
@@ -346,18 +475,38 @@ npm run dev                    # http://localhost:5173
 
 ### Despliegue con Podman
 
+`scripts/start_airflow.ps1` es la forma recomendada (idempotente, levanta
+SQL Server + Airflow en la red compartida en el orden correcto — ver
+sección anterior). El equivalente manual, paso a paso:
+
 ```bash
-# Construir imagen
+# Construir imagen (incluye el driver ODBC 18 para pyodbc)
 podman build -f Dockerfile.airflow -t gastos-etl-airflow:local .
 
-# Ejecutar contenedor
+# Red compartida (una sola vez)
+podman network create gastos-etl-net
+
+# SQL Server (ver docker-compose.sqlserver.yaml para la config de referencia)
+podman run -d --name gastos_etl_mssql \
+  --restart unless-stopped \
+  --network gastos-etl-net \
+  -e ACCEPT_EULA=Y -e MSSQL_PID=Express -e MSSQL_SA_PASSWORD=<tu-password> \
+  -v mssql_data:/var/opt/mssql \
+  -p 14330:1433 \
+  mcr.microsoft.com/mssql/server:2022-latest
+
+# Airflow, en la misma red -- resuelve SQL Server por nombre de contenedor
+# y por su puerto INTERNO real (1433, no el 14330 publicado en el host)
 podman run -d --name gastos_etl_airflow \
   --restart unless-stopped \
+  --network gastos-etl-net \
   --env-file .env \
   -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
   -e PYTHONPATH=/opt/airflow/src \
-  -e DUCKDB_PATH=/opt/airflow/data/gastos.duckdb \
   -e CHECKPOINT_PATH=/opt/airflow/data/checkpoint.json \
+  -e MSSQL_HOST=gastos_etl_mssql \
+  -e MSSQL_PORT=1433 \
+  -e MSSQL_ODBC_DRIVER="ODBC Driver 18 for SQL Server" \
   -v "$(pwd)/dags:/opt/airflow/dags:Z" \
   -v "$(pwd)/src:/opt/airflow/src:Z" \
   -v "$(pwd)/data:/opt/airflow/data:Z" \
@@ -423,7 +572,8 @@ pytest                           # Ejecuta todo el suite
 | **Unit** | `test_parser.py` | Parser de débito con fixture `.eml` real exportado de Gmail |
 | **Unit** | `test_pago_servicio_parser.py` | Parser de pago de servicio con fixture HTML |
 | **Integration** | `test_pipeline.py` | Pipeline completo con fakes (`FakeSource`, `FakeParser`, `FakeRepo`) — sin red ni disco |
-| **Config Guards** | `test_deploy_config.py` | Sincronización entre `docker-compose.yaml`, scripts PS1, y DAG (nombre contenedor, imagen, schedule, callbacks) |
+| **Unit** | `test_sqlserver_repository.py` | `SqlServerGastoRepository` con `pyodbc` mockeado — sin SQL Server real |
+| **Config Guards** | `test_deploy_config.py` | Sincronización entre `docker-compose*.yaml`, scripts PS1, y DAG (nombres de contenedor, imagen, red, schedule, callbacks) |
 
 Los **Config Guards** son particularmente relevantes: previenen drift silencioso entre archivos de infraestructura (ej: renombrar el contenedor en el Compose sin actualizar el PowerShell de arranque).
 
@@ -431,7 +581,26 @@ Los **Config Guards** son particularmente relevantes: previenen drift silencioso
 
 ## 🔍 Consultas Ad-Hoc
 
-### CLI incluido
+### SQL Server (modelo estrella activo)
+
+```sql
+-- Top 5 comercios por gasto total
+SELECT TOP 5 c.nombre_comercio, SUM(f.monto) AS total, COUNT(*) AS txns
+FROM fact_gastos f
+JOIN dim_comercio c ON c.comercio_id = f.comercio_id
+GROUP BY c.nombre_comercio
+ORDER BY total DESC;
+
+-- Gasto mensual por tipo
+SELECT t.anio, t.mes, ti.tipo_descripcion, SUM(f.monto) AS total
+FROM fact_gastos f
+JOIN dim_tiempo t ON t.fecha_id = f.fecha_id
+JOIN dim_tipo ti ON ti.tipo_id = f.tipo_id
+GROUP BY t.anio, t.mes, ti.tipo_descripcion
+ORDER BY t.anio DESC, t.mes DESC;
+```
+
+### CLI incluido *(congelado, contra el DuckDB histórico)*
 
 ```bash
 python scripts/query_gastos.py resumen      # Resumen mensual

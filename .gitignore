@@ -21,3 +21,6 @@ logs/
 
 # .env generado en api/
 api/.env
+
+# AI Agent rules (local context only)
+.agents/
