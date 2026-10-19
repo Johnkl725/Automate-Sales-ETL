@@ -10,6 +10,12 @@ from gastos_etl.repositories.parquet_repository import ParquetGastoRepository
 from gastos_etl.repositories.sqlserver_repository import SqlServerGastoRepository
 
 
+@pytest.fixture(autouse=True)
+def mock_sqlserver_init():
+    with patch.object(SqlServerGastoRepository, "__init__", return_value=None):
+        yield
+
+
 @pytest.fixture
 def base_settings() -> Settings:
     return Settings(
