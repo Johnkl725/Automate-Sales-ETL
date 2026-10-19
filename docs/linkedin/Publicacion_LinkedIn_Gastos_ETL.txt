@@ -1,0 +1,25 @@
+Convertí mis notificaciones de gastos en un proyecto de ingeniería de datos.
+
+Así nació Gastos ETL: un proyecto personal para transformar correos de operaciones financieras en datos estructurados y analizables.
+
+El flujo comienza con la extracción de notificaciones por IMAP. Con Python, proceso correos de consumos con tarjeta BCP, pagos de servicios y transferencias Yape, extraigo sus campos y clasifico los comercios mediante reglas.
+
+Los datos se almacenan en SQL Server con un modelo estrella: una tabla de hechos de gastos y dimensiones de tiempo, tipo de operación y comercio. Apache Airflow programa la ejecución diaria e incorpora reintentos y notificaciones por correo.
+
+Detrás del flujo hay decisiones que considero clave:
+
+• Arquitectura hexagonal para separar la lógica del negocio de las fuentes de datos y la persistencia.
+
+• Control por identificador de correo para evitar volver a cargar el mismo mensaje.
+
+• Manejo de errores de parsing por mensaje, para continuar con los demás correos del lote.
+
+• Pruebas unitarias con Pytest y un flujo de integración continua en GitHub Actions.
+
+El proyecto también cuenta con un reporte en Power BI para analizar mis gastos. Lo mantengo privado porque contiene información financiera personal; aquí comparto el proceso técnico y las decisiones de diseño.
+
+Este proyecto me permitió conectar extracción, transformación, modelado dimensional y visualización en un caso de uso propio. El aprendizaje más valioso: la calidad del análisis empieza mucho antes de construir el reporte.
+
+¿Has convertido alguna necesidad cotidiana en un proyecto de datos? Me gustaría conocer tu experiencia.
+
+#DataEngineering #Python #SQLServer #ApacheAirflow #PowerBI

@@ -36,6 +36,32 @@ class Settings(BaseSettings):
     # contra SQL Server 2022, sin la sensibilidad al ping ICMP del 18).
     mssql_odbc_driver: str = "ODBC Driver 18 for SQL Server"
 
+    # --- Storage Sink Strategy ---
+    # "auto", "mssql", "parquet", "both"
+    storage_sink: str = "auto"
+    parquet_path: str = "./data/datalake"
+
+    # --- Cloudflare R2 / S3 Storage (Opcional para Data Lake Cloud) ---
+    r2_account_id: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_bucket: str | None = None
+
+    @property
+    def r2_endpoint(self) -> str | None:
+        if self.r2_account_id:
+            return f"{self.r2_account_id}.r2.cloudflarestorage.com"
+        return None
+
+    @property
+    def is_r2_configured(self) -> bool:
+        return bool(
+            self.r2_account_id
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+            and self.r2_bucket
+        )
+
     @property
     def bcp_subject_hints_list(self) -> list[str]:
         return [hint.strip() for hint in self.bcp_subject_hints.split(",") if hint.strip()]

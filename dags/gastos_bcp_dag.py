@@ -162,10 +162,12 @@ def gastos_bcp_dag():
             ],
             processed_label=settings.imap_processed_label,
         )
-        repo = SqlServerGastoRepository(settings)
+        from gastos_etl.repositories import create_repository
         from gastos_etl.parsers.yape_parser import YapeParser
         from gastos_etl.categorizers.rule_based import RuleBasedCategorizer
-        
+
+        repo = create_repository(settings)
+
         pipeline = GastoETLPipeline(
             source=source,
             parsers=[BCPDebitoParser(), BCPPagoServicioParser(), YapeParser()],
