@@ -26,16 +26,26 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Restore Parquet Lakehouse & Checkpoint Cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          data/datalake
+          data/checkpoint.json
+        key: gastos-lakehouse-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: |
+          gastos-lakehouse-${{ runner.os }}-
+
     - name: Run ETL Pipeline (Serverless Cloud Mode)
       env:
         PYTHONPATH: src
         STORAGE_SINK: auto
-        # Credenciales seguras inyectadas desde GitHub Secrets
+        # Credenciales seguras inyectadas desde GitHub Secrets (100% Gratis, 0 Tarjetas)
         IMAP_HOST: ${{ secrets.IMAP_HOST || 'imap.gmail.com' }}
         IMAP_PORT: ${{ secrets.IMAP_PORT || 993 }}
         IMAP_USER: ${{ secrets.IMAP_USER }}
         IMAP_APP_PASSWORD: ${{ secrets.IMAP_APP_PASSWORD }}
-        # Cloudflare R2 / S3 Storage (Opcional)
+        # Variables Cloud opcionales (vacías por defecto)
         R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
         R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -43,11 +53,11 @@ jobs:
       run: |
         python scripts/run_local.py
 
-    - name: Upload Parquet Artifacts (Fallback si no se usa Cloudflare R2)
+    - name: Upload Parquet Artifacts (Descargable desde la web de GitHub)
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: gastos-parquet-datalake
         path: data/datalake/
         if-no-files-found: ignore
-        retention-days: 30
+        retention-days: 90
