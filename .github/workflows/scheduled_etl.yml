@@ -2,9 +2,12 @@ name: Scheduled Serverless ETL (Cloud Runner)
 
 on:
   schedule:
-    # 13:00 UTC = 08:00 AM Hora de Lima (PET)
-    - cron: '0 13 * * *'
+    # 13:15 UTC = 08:15 AM Hora de Lima (minuto 15 para evitar colas de hora punta en GitHub)
+    - cron: '15 13 * * *'
   workflow_dispatch: # Permite dispararlo a mano con un clic en la pestaña "Actions" de GitHub
+
+permissions:
+  contents: write # Permite a GitHub Actions commitear el Data Lake actualizado
 
 jobs:
   run-etl:
@@ -52,6 +55,18 @@ jobs:
         R2_BUCKET: ${{ secrets.R2_BUCKET }}
       run: |
         python scripts/run_local.py
+
+    - name: Commit and push Parquet Data Lake to repository
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add data/datalake/
+        if ! git diff --cached --quiet; then
+          git commit -m "chore(data): auto-update parquet lakehouse [skip ci]"
+          git push || echo "Aviso: Push omitido (verificar permisos de escritura en repo)"
+        else
+          echo "No se generaron transacciones nuevas para commitear."
+        fi
 
     - name: Upload Parquet Artifacts (Descargable desde la web de GitHub)
       uses: actions/upload-artifact@v4
